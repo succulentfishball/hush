@@ -46,58 +46,91 @@ def search_station(query: str) -> list[dict]:
 def get_journey_options(from_station: str, to_station: str, time: datetime = None) -> list[dict]:
     """
     Fetch journey options from TfL Journey Planner API.
-    Returns top route options between two points.
-    Uses station names directly which works more reliably.
+    Makes multiple requests with different preferences to get route variety.
     """
     from_encoded = quote(from_station, safe='')
     to_encoded = quote(to_station, safe='')
 
-    url = f"{TFL_API_BASE}/Journey/JourneyResults/{from_encoded}/to/{to_encoded}"
-    params = get_api_params()
-    params.update({
-        "mode": "tube,dlr,overground,elizabeth-line,bus,national-rail",
-        "journeyPreference": "LeastTime",
-        "alternativeCycle": "false",
-        "alternativeWalking": "false"
-    })
+    all_journeys = []
+    
+    # Try different journey preferences to get variety
+    preferences = ["LeastTime", "LeastInterchange", "LeastWalking"]
+    
+    for preference in preferences:
+        url = f"{TFL_API_BASE}/Journey/JourneyResults/{from_encoded}/to/{to_encoded}"
+        params = get_api_params()
+        params.update({
+            "mode": "tube,dlr,overground,elizabeth-line,bus,national-rail",
+            "journeyPreference": preference,
+            "alternativeCycle": "true",
+            "alternativeWalking": "true",
+            "maxTransferMinutes": "10",
+            "maxWalkingMinutes": "20"
+        })
 
-    if time:
-        params["time"] = time.strftime("%H%M")
-        params["date"] = time.strftime("%Y%m%d")
-        params["timeIs"] = "Departing"
+        if time:
+            params["time"] = time.strftime("%H%M")
+            params["date"] = time.strftime("%Y%m%d")
+            params["timeIs"] = "Departing"
 
-    try:
-        response = requests.get(url, params=params, timeout=15)
-        data = response.json()
+        try:
+            response = requests.get(url, params=params, timeout=15)
+            data = response.json()
 
-        # Check if TfL returns disambiguation options
-        if "toLocationDisambiguation" in data or "fromLocationDisambiguation" in data:
-            to_options = data.get("toLocationDisambiguation", {}).get("disambiguationOptions", [])
-            from_options = data.get("fromLocationDisambiguation", {}).get("disambiguationOptions", [])
+            # Check if TfL returns disambiguation options
+            if "toLocationDisambiguation" in data or "fromLocationDisambiguation" in data:
+                to_options = data.get("toLocationDisambiguation", {}).get("disambiguationOptions", [])
+                from_options = data.get("fromLocationDisambiguation", {}).get("disambiguationOptions", [])
 
-            new_from = from_station
-            new_to = to_station
+                new_from = from_station
+                new_to = to_station
 
-            if from_options and len(from_options) > 0:
-                place = from_options[0].get("place", {})
-                new_from = place.get("icsCode") or place.get("commonName") or from_station
+                if from_options and len(from_options) > 0:
+                    place = from_options[0].get("place", {})
+                    new_from = place.get("icsCode") or place.get("commonName") or from_station
 
-            if to_options and len(to_options) > 0:
-                place = to_options[0].get("place", {})
-                new_to = place.get("icsCode") or place.get("commonName") or to_station
+                if to_options and len(to_options) > 0:
+                    place = to_options[0].get("place", {})
+                    new_to = place.get("icsCode") or place.get("commonName") or to_station
 
-            if new_from != from_station or new_to != to_station:
-                from_encoded = quote(str(new_from), safe='')
-                to_encoded = quote(str(new_to), safe='')
-                url = f"{TFL_API_BASE}/Journey/JourneyResults/{from_encoded}/to/{to_encoded}"
-                response = requests.get(url, params=params, timeout=15)
-                data = response.json()
+                if new_from != from_station or new_to != to_station:
+                    from_encoded = quote(str(new_from), safe='')
+                    to_encoded = quote(str(new_to), safe='')
+                    url = f"{TFL_API_BASE}/Journey/JourneyResults/{from_encoded}/to/{to_encoded}"
+                    response = requests.get(url, params=params, timeout=15)
+                    data = response.json()
 
-        response.raise_for_status()
-        return data.get("journeys", [])[:5]
-    except requests.RequestException as e:
-        st.error(f"Error fetching journeys: {e}")
-        return []
+            response.raise_for_status()
+            journeys = data.get("journeys", [])
+            
+            # Add journeys to our collection, avoiding duplicates
+            for journey in journeys[:3]:  # Take top 3 from each preference
+                # Create a simple hash to identify unique routes
+                leg_summary = tuple(
+                    (leg.get("mode", {}).get("name", ""), 
+                     leg.get("routeOptions", [{}])[0].get("name", ""))
+                    for leg in journey.get("legs", [])
+                )
+                
+                # Check if we already have this route
+                is_duplicate = any(
+                    tuple(
+                        (leg.get("mode", {}).get("name", ""), 
+                         leg.get("routeOptions", [{}])[0].get("name", ""))
+                        for leg in j.get("legs", [])
+                    ) == leg_summary
+                    for j in all_journeys
+                )
+                
+                if not is_duplicate:
+                    all_journeys.append(journey)
+                    
+        except requests.RequestException as e:
+            st.error(f"Error fetching journeys with {preference}: {e}")
+            continue
+    
+    # Return up to 5 unique routes
+    return all_journeys[:5]
 
 
 def get_crowding_data(naptan_id: str) -> dict:

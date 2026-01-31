@@ -149,7 +149,7 @@ def main():
                 # Crowding visualization
                 chart = create_crowding_chart(route)
                 if chart:
-                    st.plotly_chart(chart, use_container_width=True)
+                    st.plotly_chart(chart, use_container_width=True, key=f"crowding_chart_route_{i}")
 
         # Hourly prediction for destination
         st.divider()
@@ -158,7 +158,7 @@ def main():
 
         if dest_id:
             prediction_chart = create_hourly_prediction(dest_id)
-            st.plotly_chart(prediction_chart, use_container_width=True)
+            st.plotly_chart(prediction_chart, use_container_width=True, key="hourly_prediction_chart")
 
     elif search_clicked:
         st.warning("⚠️ Please select both origin and destination stations.")
