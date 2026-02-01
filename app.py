@@ -6,13 +6,16 @@ A smart routing app for NYC subway with quiet score ratings (coming soon).
 import streamlit as st
 import requests
 import json
+import os
 from datetime import datetime
+from dotenv import load_dotenv
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
 
-GOOGLE_MAPS_API_KEY = "AIzaSyAUHfitfmxyCC4zwWsP-A876BmXhyFpaWM"
+load_dotenv()
+GOOGLE_MAPS_API_KEY = os.getenv("ROUTES_API_KEY")
 
 # ============================================================================
 # STATION DATA
@@ -190,9 +193,23 @@ def get_routes(origin_id: str, destination_id: str, coords: dict):
                 "quiet_score": None  # Placeholder for later
             })
         
+        # Deduplicate routes based on the sequence of transit lines used
+        def get_route_signature(route):
+            """Create a unique signature based on the lines used."""
+            transit_steps = [s for s in route["steps"] if s["type"] == "transit"]
+            return tuple((s["line"], s["departure"], s["arrival"]) for s in transit_steps)
+        
+        seen_signatures = set()
+        unique_routes = []
+        for route in processed_routes:
+            sig = get_route_signature(route)
+            if sig not in seen_signatures:
+                seen_signatures.add(sig)
+                unique_routes.append(route)
+        
         # Sort by duration and return top 3
-        processed_routes.sort(key=lambda r: r["duration_min"])
-        return processed_routes[:3], None
+        unique_routes.sort(key=lambda r: r["duration_min"])
+        return unique_routes[:3], None
         
     except requests.RequestException as e:
         return None, f"Network error: {e}"

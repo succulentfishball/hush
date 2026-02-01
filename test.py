@@ -5,14 +5,17 @@ Uses GTFS station IDs and filters for subway/rail only.
 
 import requests
 import json
+import os
 from datetime import datetime
+from dotenv import load_dotenv
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
 
-# Replace with your Google Maps API key
-GOOGLE_MAPS_API_KEY = "AIzaSyAUHfitfmxyCC4zwWsP-A876BmXhyFpaWM"
+# Load .env file (if exists), then check environment variables
+load_dotenv()
+GOOGLE_MAPS_API_KEY = os.getenv("ROUTES_API_KEY")
 
 # MTA GTFS Stops URL (for getting coordinates from station IDs)
 MTA_GTFS_STOPS_URL = "https://data.ny.gov/api/views/39hk-dx4f/rows.csv?accessType=DOWNLOAD"
