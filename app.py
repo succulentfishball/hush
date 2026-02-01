@@ -1,12 +1,14 @@
 """
 MTA Sensory-Safe Router
-A smart routing app for NYC subway with quiet score ratings (coming soon).
+A smart routing app for NYC subway with quiet score ratings.
+Glassmorphism design with map overlay.
 """
 
 import streamlit as st
 import requests
 import json
 import os
+import pydeck as pdk
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -16,6 +18,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 GOOGLE_MAPS_API_KEY = os.getenv("ROUTES_API_KEY")
+
+# NYC center coordinates
+NYC_CENTER = [40.7580, -73.9855]  # Midtown Manhattan
 
 # ============================================================================
 # STATION DATA
@@ -28,7 +33,6 @@ def load_station_coordinates():
         with open("mta_stops_cache.json", "r") as f:
             return json.load(f)
     except FileNotFoundError:
-        st.error("Station data not found. Please run test.py first to download station data.")
         return {}
 
 
@@ -36,17 +40,18 @@ def get_station_list():
     """Get a sorted list of unique station names with their IDs."""
     coords = load_station_coordinates()
     
-    # Create a dict of name -> list of IDs (some stations have multiple IDs)
     stations = {}
     for station_id, data in coords.items():
         name = data.get("name", "")
-        # Skip directional variants (N/S suffixes)
         if station_id.endswith("N") or station_id.endswith("S"):
             continue
         if name and name not in stations:
-            stations[name] = station_id
+            stations[name] = {
+                "id": station_id,
+                "lat": data.get("lat"),
+                "lng": data.get("lng")
+            }
     
-    # Sort by name
     return dict(sorted(stations.items()))
 
 
@@ -216,85 +221,390 @@ def get_routes(origin_id: str, destination_id: str, coords: dict):
 
 
 # ============================================================================
+# LINEAR AESTHETIC CSS
+# ============================================================================
+
+def inject_custom_css():
+    st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    
+    /* Hide Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    
+    /* Root variables */
+    :root {
+        --bg-primary: #0a0a0a;
+        --bg-secondary: #111111;
+        --bg-elevated: #161616;
+        --border-subtle: rgba(255, 255, 255, 0.08);
+        --border-default: rgba(255, 255, 255, 0.1);
+        --text-primary: #ffffff;
+        --text-secondary: rgba(255, 255, 255, 0.6);
+        --text-tertiary: rgba(255, 255, 255, 0.4);
+        --accent-green: #00ff88;
+        --accent-green-dim: rgba(0, 255, 136, 0.15);
+        --accent-red: #ff4444;
+        --accent-red-dim: rgba(255, 68, 68, 0.15);
+        --accent-purple: #8b5cf6;
+    }
+    
+    * {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    
+    /* Pure black background */
+    .stApp {
+        background: var(--bg-primary);
+    }
+    
+    /* Main container */
+    .main .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+        max-width: 100%;
+    }
+    
+    /* Card with glow effect */
+    .linear-card {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-subtle);
+        border-radius: 12px;
+        padding: 20px;
+        margin: 10px 0;
+        position: relative;
+        transition: all 0.2s ease;
+    }
+    
+    .linear-card::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        border-radius: 12px;
+        background: radial-gradient(ellipse at top, rgba(0, 255, 136, 0.03) 0%, transparent 50%);
+        pointer-events: none;
+    }
+    
+    .linear-card:hover {
+        border-color: var(--border-default);
+        background: var(--bg-elevated);
+    }
+    
+    /* Search container */
+    .search-container {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-subtle);
+        border-radius: 12px;
+        padding: 24px;
+        margin-bottom: 16px;
+    }
+    
+    /* Map container with glow */
+    .map-container {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-subtle);
+        border-radius: 16px;
+        height: 85vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        position: relative;
+        overflow: hidden;
+    }
+    
+    .map-container::before {
+        content: '';
+        position: absolute;
+        top: -50%;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 80%;
+        height: 50%;
+        background: radial-gradient(ellipse, rgba(0, 255, 136, 0.08) 0%, transparent 70%);
+        pointer-events: none;
+    }
+    
+    /* Typography */
+    .app-title {
+        font-size: 1.75rem;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-bottom: 4px;
+        letter-spacing: -0.5px;
+    }
+    
+    .app-subtitle {
+        font-size: 0.9rem;
+        color: var(--text-tertiary);
+        margin-bottom: 24px;
+    }
+    
+    .section-label {
+        font-size: 0.75rem;
+        font-weight: 500;
+        color: var(--text-tertiary);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 8px;
+    }
+    
+    /* Override Streamlit selectbox */
+    .stSelectbox > div > div {
+        background: var(--bg-primary) !important;
+        border: 1px solid var(--border-default) !important;
+        border-radius: 8px !important;
+        color: var(--text-primary) !important;
+    }
+    
+    .stSelectbox > div > div:hover {
+        border-color: rgba(255, 255, 255, 0.2) !important;
+    }
+    
+    .stSelectbox > div > div:focus-within {
+        border-color: var(--accent-green) !important;
+        box-shadow: 0 0 0 1px var(--accent-green) !important;
+    }
+    
+    .stSelectbox label {
+        color: var(--text-secondary) !important;
+    }
+    
+    /* Primary button - neon green */
+    .stButton > button {
+        background: var(--accent-green) !important;
+        color: #000000 !important;
+        border: none !important;
+        border-radius: 8px !important;
+        padding: 12px 24px !important;
+        font-weight: 600 !important;
+        font-size: 0.875rem !important;
+        transition: all 0.15s ease !important;
+        box-shadow: 0 0 20px rgba(0, 255, 136, 0.3) !important;
+    }
+    
+    .stButton > button:hover {
+        background: #00cc6a !important;
+        box-shadow: 0 0 30px rgba(0, 255, 136, 0.5) !important;
+        transform: translateY(-1px) !important;
+    }
+    
+    /* Route card */
+    .route-card {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-subtle);
+        border-radius: 12px;
+        padding: 16px 20px;
+        margin: 8px 0;
+        transition: all 0.15s ease;
+        position: relative;
+    }
+    
+    .route-card::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(0, 255, 136, 0.3), transparent);
+        opacity: 0;
+        transition: opacity 0.15s ease;
+    }
+    
+    .route-card:hover {
+        border-color: var(--border-default);
+        background: var(--bg-elevated);
+    }
+    
+    .route-card:hover::before {
+        opacity: 1;
+    }
+    
+    /* Duration badge */
+    .duration-badge {
+        background: var(--bg-primary);
+        color: var(--text-primary);
+        padding: 6px 12px;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: 0.875rem;
+        border: 1px solid var(--border-default);
+        display: inline-block;
+    }
+    
+    /* Quiet score - neon green for good, red for bad */
+    .quiet-badge-good {
+        background: var(--accent-green-dim);
+        color: var(--accent-green);
+        padding: 6px 12px;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: 0.8rem;
+        border: 1px solid rgba(0, 255, 136, 0.2);
+    }
+    
+    .quiet-badge-bad {
+        background: var(--accent-red-dim);
+        color: var(--accent-red);
+        padding: 6px 12px;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: 0.8rem;
+        border: 1px solid rgba(255, 68, 68, 0.2);
+    }
+    
+    .quiet-badge-pending {
+        background: transparent;
+        color: var(--text-tertiary);
+        padding: 6px 12px;
+        border-radius: 6px;
+        font-weight: 500;
+        font-size: 0.8rem;
+        border: 1px solid var(--border-subtle);
+    }
+    
+    /* Line badge */
+    .line-badge {
+        padding: 4px 10px;
+        border-radius: 6px;
+        font-weight: 700;
+        font-size: 0.8rem;
+        color: white;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 36px;
+    }
+    
+    /* Step row */
+    .step-row {
+        display: flex;
+        align-items: center;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--border-subtle);
+        color: var(--text-primary);
+        font-size: 0.875rem;
+    }
+    
+    .step-row:last-child {
+        border-bottom: none;
+        padding-bottom: 0;
+    }
+    
+    .step-details {
+        flex: 1;
+        margin-left: 12px;
+        color: var(--text-secondary);
+    }
+    
+    .step-meta {
+        color: var(--text-tertiary);
+        font-size: 0.8rem;
+    }
+    
+    /* Walk icon */
+    .walk-icon {
+        width: 36px;
+        height: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1rem;
+        color: var(--text-tertiary);
+    }
+    
+    /* Route header */
+    .route-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 12px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid var(--border-subtle);
+    }
+    
+    .route-meta {
+        color: var(--text-tertiary);
+        font-size: 0.8rem;
+        margin-left: 12px;
+    }
+    
+    /* Results header */
+    .results-header {
+        color: var(--text-tertiary);
+        font-size: 0.8rem;
+        margin: 16px 0 8px 0;
+    }
+    
+    /* Error state */
+    .error-card {
+        background: var(--accent-red-dim);
+        border: 1px solid rgba(255, 68, 68, 0.2);
+        border-radius: 8px;
+        padding: 16px;
+        color: var(--accent-red);
+        text-align: center;
+    }
+    
+    /* Warning/spinner overrides */
+    .stSpinner > div {
+        border-color: var(--accent-green) !important;
+    }
+    
+    .stWarning {
+        background: var(--bg-elevated) !important;
+        color: var(--text-secondary) !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+
+# ============================================================================
 # UI COMPONENTS
 # ============================================================================
 
 def render_route_card(route: dict, index: int):
-    """Render a single route as a card."""
+    """Render a route card with Linear aesthetic."""
     duration = route["duration_min"]
     distance = route["distance_km"]
     steps = route["steps"]
     quiet_score = route.get("quiet_score")
     
-    # Count transfers
     transit_count = len([s for s in steps if s["type"] == "transit"])
     transfers = max(0, transit_count - 1)
+    transfer_text = "Direct" if transfers == 0 else f"{transfers} transfer{'s' if transfers > 1 else ''}"
     
-    # Card container
-    with st.container():
-        # Header row
-        col1, col2, col3 = st.columns([2, 1, 1])
-        
-        with col1:
-            st.markdown(f"### 🚇 Route {index + 1}")
-        
-        with col2:
-            st.metric("Duration", f"{duration} min")
-        
-        with col3:
-            if quiet_score is not None:
-                st.metric("Quiet Score", f"{quiet_score}/10")
-            else:
-                st.markdown("**Quiet Score**")
-                st.caption("Coming soon...")
-        
-        # Route summary
-        transfer_text = "Direct" if transfers == 0 else f"{transfers} transfer{'s' if transfers > 1 else ''}"
-        st.caption(f"📏 {distance:.1f} km  •  🔄 {transfer_text}")
-        
-        # Steps
-        st.markdown("---")
-        
-        for i, step in enumerate(steps):
-            if step["type"] == "transit":
-                line = step["line"]
-                color = step.get("color", "#888888")
-                
-                # Create a colored badge for the line
-                st.markdown(
-                    f"""
-                    <div style="display: flex; align-items: center; margin: 8px 0;">
-                        <span style="
-                            background-color: {color};
-                            color: white;
-                            padding: 4px 12px;
-                            border-radius: 20px;
-                            font-weight: bold;
-                            margin-right: 10px;
-                            min-width: 50px;
-                            text-align: center;
-                        ">{line}</span>
-                        <span>{step['departure']} → {step['arrival']}</span>
-                        <span style="color: #666; margin-left: auto;">
-                            {step['num_stops']} stops • {step['duration_min']} min
-                        </span>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-            
-            elif step["type"] == "walk":
-                st.markdown(
-                    f"""
-                    <div style="display: flex; align-items: center; margin: 8px 0; color: #666;">
-                        <span style="margin-right: 10px;">🚶</span>
-                        <span>Walk {step['distance_m']}m ({step['duration_min']} min)</span>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-        
-        st.markdown("<br>", unsafe_allow_html=True)
+    # Build steps HTML - no extra whitespace/newlines
+    steps_html = ""
+    for step in steps:
+        if step["type"] == "transit":
+            line = step["line"]
+            color = step.get("color", "#888888")
+            steps_html += f'<div class="step-row"><span class="line-badge" style="background-color: {color};">{line}</span><span class="step-details">{step["departure"]} → {step["arrival"]}</span><span class="step-meta">{step["num_stops"]} stops · {step["duration_min"]}m</span></div>'
+        elif step["type"] == "walk":
+            steps_html += f'<div class="step-row"><span class="walk-icon">→</span><span class="step-details">Walk {step["distance_m"]}m</span><span class="step-meta">{step["duration_min"]}m</span></div>'
+    
+    # Quiet score badge
+    if quiet_score is not None:
+        if quiet_score >= 7:
+            quiet_html = f'<span class="quiet-badge-good">● Quiet {quiet_score}/10</span>'
+        elif quiet_score >= 4:
+            quiet_html = f'<span class="quiet-badge-pending">○ Moderate {quiet_score}/10</span>'
+        else:
+            quiet_html = f'<span class="quiet-badge-bad">● Busy {quiet_score}/10</span>'
+    else:
+        quiet_html = '<span class="quiet-badge-pending">○ Score pending</span>'
+    
+    # Render the card - single line to avoid whitespace issues
+    card_html = f'<div class="route-card"><div class="route-header"><div style="display: flex; align-items: center;"><span class="duration-badge">{duration} min</span><span class="route-meta">{distance:.1f} km · {transfer_text}</span></div>{quiet_html}</div>{steps_html}</div>'
+    
+    st.markdown(card_html, unsafe_allow_html=True)
 
 
 # ============================================================================
@@ -303,99 +613,151 @@ def render_route_card(route: dict, index: int):
 
 def main():
     st.set_page_config(
-        page_title="MTA Sensory-Safe Router",
+        page_title="Quiet Routes",
         page_icon="🚇",
-        layout="wide"
+        layout="wide",
+        initial_sidebar_state="collapsed"
     )
     
-    # Custom CSS
-    st.markdown("""
-        <style>
-        .stMetric {
-            background-color: #f0f2f6;
-            padding: 10px;
-            border-radius: 10px;
-        }
-        .route-card {
-            border: 1px solid #ddd;
-            border-radius: 10px;
-            padding: 20px;
-            margin: 10px 0;
-        }
-        </style>
-    """, unsafe_allow_html=True)
+    inject_custom_css()
     
-    # Header
-    st.title("🚇 MTA Sensory-Safe Router")
-    st.markdown("*Find the quietest routes through NYC's subway system*")
-    st.markdown("---")
-    
-    # Load station data
+    # Load data
     coords = load_station_coordinates()
     stations = get_station_list()
     
     if not stations:
-        st.error("Failed to load station data. Please ensure mta_stops_cache.json exists.")
+        st.markdown("""
+        <div class="error-card">Failed to load station data.</div>
+        """, unsafe_allow_html=True)
         return
     
     station_names = list(stations.keys())
     
-    # Input section
-    col1, col2 = st.columns(2)
+    # Two-column layout
+    left_col, right_col = st.columns([1, 2])
     
-    with col1:
-        st.subheader("📍 Origin")
+    with left_col:
+        # Header
+        st.markdown("""
+        <div style="margin-bottom: 20px;">
+            <div class="app-title">Quiet Routes</div>
+            <div class="app-subtitle">Navigate NYC subway with less stress</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Search inputs
+        st.markdown('<div class="section-label">From</div>', unsafe_allow_html=True)
         origin_name = st.selectbox(
-            "Select departure station",
+            "Origin",
             station_names,
             index=station_names.index("Times Sq-42 St") if "Times Sq-42 St" in station_names else 0,
-            key="origin"
+            key="origin",
+            label_visibility="collapsed"
         )
-    
-    with col2:
-        st.subheader("🎯 Destination")
+        
+        st.markdown('<div class="section-label" style="margin-top: 16px;">To</div>', unsafe_allow_html=True)
         destination_name = st.selectbox(
-            "Select arrival station",
+            "Destination",
             station_names,
             index=station_names.index("Bowling Green") if "Bowling Green" in station_names else 1,
-            key="destination"
+            key="destination",
+            label_visibility="collapsed"
         )
+        
+        # Search button
+        search_clicked = st.button("Find routes", use_container_width=True)
+        
+        # Results
+        if search_clicked:
+            if origin_name == destination_name:
+                st.warning("Select different stations")
+            else:
+                origin_id = stations[origin_name]["id"]
+                dest_id = stations[destination_name]["id"]
+                
+                with st.spinner(""):
+                    routes, error = get_routes(origin_id, dest_id, coords)
+                
+                if error:
+                    st.markdown(f"""
+                    <div class="error-card">❌ {error}</div>
+                    """, unsafe_allow_html=True)
+                elif routes:
+                    st.markdown(f"""
+                    <div class="results-header">
+                        {len(routes)} route{'s' if len(routes) > 1 else ''} · {datetime.now().strftime('%H:%M')}
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    for i, route in enumerate(routes):
+                        render_route_card(route, i)
+                else:
+                    st.markdown("""
+                    <div class="error-card">No routes found</div>
+                    """, unsafe_allow_html=True)
     
-    # Search button
-    st.markdown("<br>", unsafe_allow_html=True)
-    
-    if st.button("🔍 Find Routes", type="primary", use_container_width=True):
-        if origin_name == destination_name:
-            st.warning("Please select different stations for origin and destination.")
-            return
+    with right_col:
+        # Interactive NYC Subway Map
+        # Get origin and destination coordinates for markers
+        origin_data = stations.get(origin_name, {})
+        dest_data = stations.get(destination_name, {})
         
-        origin_id = stations[origin_name]
-        dest_id = stations[destination_name]
+        # Create marker data
+        markers = []
+        if origin_data.get("lat") and origin_data.get("lng"):
+            markers.append({
+                "name": origin_name,
+                "lat": origin_data["lat"],
+                "lon": origin_data["lng"],
+                "color": [0, 255, 136, 200],  # Green
+                "type": "origin"
+            })
+        if dest_data.get("lat") and dest_data.get("lng"):
+            markers.append({
+                "name": destination_name,
+                "lat": dest_data["lat"],
+                "lon": dest_data["lng"],
+                "color": [255, 68, 68, 200],  # Red
+                "type": "destination"
+            })
         
-        with st.spinner("Finding the best routes..."):
-            routes, error = get_routes(origin_id, dest_id, coords)
+        # Calculate map center
+        if markers:
+            center_lat = sum(m["lat"] for m in markers) / len(markers)
+            center_lon = sum(m["lon"] for m in markers) / len(markers)
+            zoom = 12
+        else:
+            center_lat, center_lon = 40.7580, -73.9855  # NYC default
+            zoom = 11
         
-        if error:
-            st.error(f"❌ {error}")
-            return
+        # Create pydeck map
+        view_state = pdk.ViewState(
+            latitude=center_lat,
+            longitude=center_lon,
+            zoom=zoom,
+            pitch=0
+        )
         
-        if not routes:
-            st.warning("No routes found between these stations.")
-            return
+        # Station markers layer
+        marker_layer = pdk.Layer(
+            "ScatterplotLayer",
+            data=markers,
+            get_position=["lon", "lat"],
+            get_color="color",
+            get_radius=150,
+            pickable=True
+        )
         
-        # Display results
-        st.markdown("---")
-        st.subheader(f"🗺️ Routes from {origin_name} to {destination_name}")
-        st.caption(f"Found {len(routes)} route{'s' if len(routes) > 1 else ''} • {datetime.now().strftime('%I:%M %p')}")
-        
-        # Render route cards
-        for i, route in enumerate(routes):
-            with st.container(border=True):
-                render_route_card(route, i)
-    
-    # Footer
-    st.markdown("---")
-    st.caption("💡 Quiet scores will rate routes based on predicted crowding and sensory factors.")
+        # Render map with Carto dark basemap (free, no API key needed)
+        st.pydeck_chart(
+            pdk.Deck(
+                layers=[marker_layer],
+                initial_view_state=view_state,
+                map_style="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+                tooltip={"text": "{name}"}
+            ),
+            height=700
+        )
 
 
 if __name__ == "__main__":
