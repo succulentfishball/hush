@@ -133,7 +133,7 @@ def train_income_model(X_train, y_train, X_test, y_test, raw_income_test):
     for q, label in zip(QUANTILES, QUANTILE_LABELS):
         print(f"  Training {label} (quantile={q}) ...", end=" ")
         model = GradientBoostingRegressor(
-            loss="quantile", quantile=q, **GBM_PARAMS
+            loss="quantile", alpha=q, **GBM_PARAMS
         )
         model.fit(X_train, y_train)
         models[label] = model
