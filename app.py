@@ -129,6 +129,16 @@ def load_station_coordinates():
         return {}
 
 
+@st.cache_data
+def load_names_to_coords():
+    """Load station name to coordinates mapping."""
+    try:
+        with open("data/names_to_coords.json", "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+
 def get_station_list():
     """Get a sorted list of unique station names with their IDs."""
     coords = load_station_coordinates()
@@ -146,6 +156,38 @@ def get_station_list():
             }
     
     return dict(sorted(stations.items()))
+
+
+def find_station_coords_by_name(name: str) -> dict:
+    """Find station coordinates by name using names_to_coords.json."""
+    names_to_coords = load_names_to_coords()
+    name_stripped = name.strip()
+    
+    # First try exact match
+    if name_stripped in names_to_coords:
+        data = names_to_coords[name_stripped]
+        return {"lat": data["lat"], "lng": data["lng"], "name": name_stripped}
+    
+    # Try case-insensitive exact match
+    name_lower = name_stripped.lower()
+    for station_name, data in names_to_coords.items():
+        if station_name.lower() == name_lower:
+            return {"lat": data["lat"], "lng": data["lng"], "name": station_name}
+    
+    # Try partial match
+    for station_name, data in names_to_coords.items():
+        station_lower = station_name.lower()
+        if name_lower in station_lower or station_lower in name_lower:
+            return {"lat": data["lat"], "lng": data["lng"], "name": station_name}
+    
+    # Try matching without suffixes like "St", "Ave", etc.
+    name_clean = name_lower.replace(" st", "").replace(" ave", "").replace(" sq", "")
+    for station_name, data in names_to_coords.items():
+        station_clean = station_name.lower().replace(" st", "").replace(" ave", "").replace(" sq", "")
+        if name_clean in station_clean or station_clean in name_clean:
+            return {"lat": data["lat"], "lng": data["lng"], "name": station_name}
+    
+    return None
 
 
 def get_station_coords(station_id: str, coords: dict) -> dict:
@@ -526,6 +568,39 @@ def inject_custom_css():
         opacity: 1;
     }
     
+    /* Best route styling */
+    .route-card-best {
+        border-color: var(--accent-green) !important;
+        box-shadow: 0 0 30px rgba(0, 255, 136, 0.15);
+        position: relative;
+    }
+    
+    .route-card-best::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        border-radius: 12px;
+        background: radial-gradient(ellipse at top, rgba(0, 255, 136, 0.08) 0%, transparent 60%);
+        pointer-events: none;
+    }
+    
+    .best-route-badge {
+        position: absolute;
+        top: -10px;
+        right: 20px;
+        background: var(--accent-green);
+        color: #000;
+        padding: 4px 12px;
+        border-radius: 4px;
+        font-size: 0.65rem;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        z-index: 10;
+    }
+    
     /* Duration badge */
     .duration-badge {
         background: var(--bg-primary);
@@ -702,6 +777,80 @@ def inject_custom_css():
         background: var(--bg-elevated) !important;
         color: var(--text-secondary) !important;
     }
+    
+    /* Animated Loading State */
+    .loading-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 40px 20px;
+        gap: 16px;
+    }
+    
+    .loading-dots {
+        display: flex;
+        gap: 8px;
+    }
+    
+    .loading-dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: var(--accent-green);
+        animation: loadingPulse 1.4s ease-in-out infinite;
+    }
+    
+    .loading-dot:nth-child(1) {
+        animation-delay: 0s;
+    }
+    
+    .loading-dot:nth-child(2) {
+        animation-delay: 0.2s;
+    }
+    
+    .loading-dot:nth-child(3) {
+        animation-delay: 0.4s;
+    }
+    
+    @keyframes loadingPulse {
+        0%, 80%, 100% {
+            transform: scale(0.6);
+            opacity: 0.4;
+        }
+        40% {
+            transform: scale(1);
+            opacity: 1;
+        }
+    }
+    
+    .loading-text {
+        color: var(--text-secondary);
+        font-size: 0.9rem;
+        animation: loadingTextPulse 2s ease-in-out infinite;
+    }
+    
+    @keyframes loadingTextPulse {
+        0%, 100% { opacity: 0.5; }
+        50% { opacity: 1; }
+    }
+    
+    .loading-subtext {
+        color: var(--text-tertiary);
+        font-size: 0.75rem;
+        margin-top: -8px;
+    }
+    
+    .loading-train {
+        font-size: 1.5rem;
+        animation: trainMove 2s ease-in-out infinite;
+    }
+    
+    @keyframes trainMove {
+        0% { transform: translateX(-20px); }
+        50% { transform: translateX(20px); }
+        100% { transform: translateX(-20px); }
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -710,7 +859,7 @@ def inject_custom_css():
 # UI COMPONENTS
 # ============================================================================
 
-def render_route_card(route: dict, index: int):
+def render_route_card(route: dict, index: int, is_best: bool = False):
     """Render a route card with Linear aesthetic."""
     duration = route["duration_min"]
     distance = route["distance_km"]
@@ -743,7 +892,9 @@ def render_route_card(route: dict, index: int):
         quiet_html = '<span class="quiet-badge-pending">○ Score pending</span>'
     
     # Render the card - single line to avoid whitespace issues
-    card_html = f'<div class="route-card"><div class="route-header"><div style="display: flex; align-items: center;"><span class="duration-badge">{duration} min</span><span class="route-meta">{distance:.1f} km · {transfer_text}</span></div>{quiet_html}</div>{steps_html}</div>'
+    best_class = ' route-card-best' if is_best else ''
+    best_badge = '<span class="best-route-badge">✨ QUIETEST</span>' if is_best else ''
+    card_html = f'<div class="route-card{best_class}">{best_badge}<div class="route-header"><div style="display: flex; align-items: center;"><span class="duration-badge">{duration} min</span><span class="route-meta">{distance:.1f} km · {transfer_text}</span></div>{quiet_html}</div>{steps_html}</div>'
     
     st.markdown(card_html, unsafe_allow_html=True)
 
@@ -816,8 +967,25 @@ def main():
                 origin_id = stations[origin_name]["id"]
                 dest_id = stations[destination_name]["id"]
                 
-                with st.spinner(""):
-                    routes, error = get_routes(origin_id, dest_id, coords)
+                # Show custom loading animation
+                loading_placeholder = st.empty()
+                loading_placeholder.markdown("""
+                <div class="loading-container">
+                    <div class="loading-train">🚇</div>
+                    <div class="loading-dots">
+                        <div class="loading-dot"></div>
+                        <div class="loading-dot"></div>
+                        <div class="loading-dot"></div>
+                    </div>
+                    <div class="loading-text">Analyzing routes...</div>
+                    <div class="loading-subtext">Predicting congestion for the next hour</div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                routes, error = get_routes(origin_id, dest_id, coords)
+                
+                # Clear loading animation
+                loading_placeholder.empty()
                 
                 if error:
                     st.markdown(f"""
@@ -839,14 +1007,22 @@ def main():
                     </div>
                     """, unsafe_allow_html=True)
                     
+                    # Find best route (highest quiet score)
+                    best_route = max(routes, key=lambda r: r.get('quiet_score', 0) or 0)
+                    best_idx = routes.index(best_route)
+                    
+                    # Store in session state for map
+                    st.session_state['best_route'] = best_route
+                    st.session_state['routes_found'] = True
+                    
                     st.markdown(f"""
                     <div class="results-header">
-                        {len(routes)} route{'s' if len(routes) > 1 else ''} found
+                        {len(routes)} route{'s' if len(routes) > 1 else ''} found · Route {best_idx + 1} recommended
                     </div>
                     """, unsafe_allow_html=True)
                     
                     for i, route in enumerate(routes):
-                        render_route_card(route, i)
+                        render_route_card(route, i, is_best=(i == best_idx))
                 else:
                     st.markdown("""
                     <div class="error-card">No routes found</div>
@@ -854,66 +1030,149 @@ def main():
     
     with right_col:
         # Interactive NYC Subway Map
-        # Get origin and destination coordinates for markers
         origin_data = stations.get(origin_name, {})
         dest_data = stations.get(destination_name, {})
         
-        # Create marker data
+        # Build station markers
         markers = []
+        
+        # Origin marker - always at selected station
         if origin_data.get("lat") and origin_data.get("lng"):
             markers.append({
                 "name": origin_name,
                 "lat": origin_data["lat"],
                 "lon": origin_data["lng"],
-                "color": [0, 255, 136, 200],  # Green
+                "color": [0, 255, 136, 255],
+                "radius": 100,
                 "type": "origin"
             })
+        
+        # Destination marker - always at selected station
         if dest_data.get("lat") and dest_data.get("lng"):
             markers.append({
                 "name": destination_name,
                 "lat": dest_data["lat"],
                 "lon": dest_data["lng"],
-                "color": [255, 68, 68, 200],  # Red
+                "color": [255, 68, 68, 255],
+                "radius": 100,
                 "type": "destination"
             })
         
-        # Calculate map center
-        if markers:
-            center_lat = sum(m["lat"] for m in markers) / len(markers)
-            center_lon = sum(m["lon"] for m in markers) / len(markers)
-            zoom = 12
-        else:
-            center_lat, center_lon = 40.7580, -73.9855  # NYC default
-            zoom = 11
+        # Intermediate stations from best route
+        intermediate_stations = []
+        best_route = st.session_state.get('best_route')
         
-        # Create pydeck map
+        if best_route and st.session_state.get('routes_found'):
+            transit_steps = [s for s in best_route.get('steps', []) if s['type'] == 'transit']
+            seen_coords = set()  # Track by actual coordinates to avoid duplicates
+            
+            for step in transit_steps:
+                # Add departure station if not start/end
+                dep_name = step['departure']
+                if dep_name.lower() != origin_name.lower() and dep_name.lower() != destination_name.lower():
+                    dep_coords = find_station_coords_by_name(dep_name)
+                    if dep_coords:
+                        # Use coordinates as key to detect true duplicates
+                        coord_key = (round(dep_coords["lat"], 5), round(dep_coords["lng"], 5))
+                        if coord_key not in seen_coords:
+                            intermediate_stations.append({
+                                "name": dep_coords["name"],  # Use matched name
+                                "lat": dep_coords["lat"],
+                                "lon": dep_coords["lng"],
+                                "color": [250, 204, 21, 255],  # Yellow
+                                "radius": 100,
+                                "type": "intermediate"
+                            })
+                            seen_coords.add(coord_key)
+                
+                # Add arrival station if not start/end
+                arr_name = step['arrival']
+                if arr_name.lower() != origin_name.lower() and arr_name.lower() != destination_name.lower():
+                    arr_coords = find_station_coords_by_name(arr_name)
+                    if arr_coords:
+                        # Use coordinates as key to detect true duplicates
+                        coord_key = (round(arr_coords["lat"], 5), round(arr_coords["lng"], 5))
+                        if coord_key not in seen_coords:
+                            intermediate_stations.append({
+                                "name": arr_coords["name"],  # Use matched name
+                                "lat": arr_coords["lat"],
+                                "lon": arr_coords["lng"],
+                                "color": [250, 204, 21, 255],  # Yellow
+                                "radius": 100,
+                                "type": "intermediate"
+                            })
+                            seen_coords.add(coord_key)
+        
+        # Calculate map center
+        all_points = markers + intermediate_stations
+        if all_points:
+            center_lat = sum(m["lat"] for m in all_points) / len(all_points)
+            center_lon = sum(m["lon"] for m in all_points) / len(all_points)
+        else:
+            center_lat, center_lon = 40.7580, -73.9855
+        
         view_state = pdk.ViewState(
             latitude=center_lat,
             longitude=center_lon,
-            zoom=zoom,
-            pitch=0
+            zoom=12,
+            pitch=0,
+            bearing=0
         )
         
-        # Station markers layer
-        marker_layer = pdk.Layer(
-            "ScatterplotLayer",
-            data=markers,
-            get_position=["lon", "lat"],
-            get_color="color",
-            get_radius=150,
-            pickable=True
-        )
+        layers = []
         
-        # Render map with Carto dark basemap (free, no API key needed)
+        # Intermediate stations layer (yellow dots)
+        if intermediate_stations:
+            intermediate_layer = pdk.Layer(
+                "ScatterplotLayer",
+                data=intermediate_stations,
+                get_position=["lon", "lat"],
+                get_color="color",
+                get_radius="radius",
+                pickable=True
+            )
+            layers.append(intermediate_layer)
+        
+        # Main markers layer (origin/destination)
+        if markers:
+            main_markers = pdk.Layer(
+                "ScatterplotLayer",
+                data=markers,
+                get_position=["lon", "lat"],
+                get_color="color",
+                get_radius="radius",
+                pickable=True
+            )
+            layers.append(main_markers)
+        
+        # Render map
         st.pydeck_chart(
             pdk.Deck(
-                layers=[marker_layer],
+                layers=layers,
                 initial_view_state=view_state,
                 map_style="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
-                tooltip={"text": "{name}"}
+                tooltip={
+                    "html": "<b>{name}</b>",
+                    "style": {
+                        "backgroundColor": "#111111",
+                        "color": "white",
+                        "border": "1px solid #333",
+                        "borderRadius": "8px",
+                        "padding": "8px 12px"
+                    }
+                }
             ),
             height=700
         )
+        
+        # Map legend
+        st.markdown("""
+        <div style="display: flex; gap: 20px; justify-content: center; margin-top: 12px; font-size: 0.75rem; color: rgba(255,255,255,0.6);">
+            <span><span style="display: inline-block; width: 10px; height: 10px; background: #00ff88; border-radius: 50%; margin-right: 6px;"></span>Starting Station</span>
+            <span><span style="display: inline-block; width: 10px; height: 10px; background: #ff4444; border-radius: 50%; margin-right: 6px;"></span>Final Station</span>
+            <span><span style="display: inline-block; width: 10px; height: 10px; background: #facc15; border-radius: 50%; margin-right: 6px;"></span>Intermediate Station</span>
+        </div>
+        """, unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
